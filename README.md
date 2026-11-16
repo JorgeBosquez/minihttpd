@@ -4,7 +4,8 @@ Servidor HTTP/1.1 educativo en C para Linux, en desarrollo.
 
 ## Estado actual
 
-Etapa 2: servidor TCP base. Acepta conexiones y las cierra; todavia no sirve HTTP.
+Etapa 3: multiples clientes con epoll y sockets no bloqueantes.
+Mantiene conexiones abiertas y lee sus bytes; todavia no sirve HTTP.
 
 ## Compilar en Ubuntu / WSL
 
@@ -18,23 +19,41 @@ make clean
 
 El puerto predeterminado es 8080; se admiten valores entre 1 y 65535.
 Escucha en todas las interfaces IPv4 (`0.0.0.0`). Ctrl+C termina el proceso;
-el sistema operativo libera sus sockets. Esta etapa usa accept bloqueante.
+el sistema operativo libera sus sockets. Esta etapa usa epoll en modo level-triggered y sockets no bloqueantes.
 
 En otra terminal, verifica la conexion con Python:
 
 ```bash
-python3 -c 'import socket; s = socket.create_connection(("127.0.0.1", 8080)); print("Conectado; cierre del servidor:", s.recv(1)); s.close()'
+python3 -c 'import socket; s = socket.create_connection(("127.0.0.1", 8080)); s.sendall(b"hola"); input("Conexion abierta. Enter para cerrar..."); s.close()'
 ```
 
-El resultado esperado es `b''`, porque el servidor acepta y cierra sin enviar
-contenido. El navegador todavia no mostrara una pagina. `listen(..., 32)` establece
-la cola solicitada de conexiones pendientes; no limita el total de clientes.
+El servidor registra los bytes recibidos y mantiene la conexion abierta hasta
+que el cliente cierre. Los datos se descartan en esta etapa: no hay parsing,
+respuestas HTTP ni keep-alive HTTP implementados aun. El navegador todavia no
+mostrara una pagina. `listen(..., 32)` solicita una cola de conexiones pendientes;
+`MAX_EVENTS=64` limita eventos por ronda, no el total de clientes.
 Si el puerto esta ocupado, el programa informa el error de bind y termina.
+
+## Pruebas
+
+Ejecutar desde la raiz del proyecto, sin iniciar manualmente otro servidor:
+
+```bash
+make
+python3 tests/test_tcp.py
+python3 tests/test_epoll.py
+```
+
+Las pruebas abren sus propios servidores en puertos disponibles. Verifican
+argumentos invalidos, puerto ocupado, EOF, ocho conexiones simultaneas,
+lecturas repetidas y recepcion de mas bytes que el buffer. El cliente activo
+progresa aunque los otros no envien datos. No se han implementado aun limites
+de conexiones ni plazos de inactividad.
 
 ## Organizacion
 
-- `src/main.c`: entrada del programa; coordinara el bucle epoll.
-- `src/server.c`, `include/server.h`: sockets y conexiones.
+- `src/main.c`: entrada del programa y validacion del puerto.
+- `src/server.c`, `include/server.h`: sockets, conexiones y bucle epoll.
 - `src/http.c`, `include/http.h`: solicitudes y respuestas HTTP.
 - `src/files.c`, `include/files.h`: acceso seguro a archivos.
 - `src/mime.c`, `include/mime.h`: tipos de contenido.
@@ -57,7 +76,7 @@ su procedencia y se conservaran los avisos pertinentes.
 ## Etapas pendientes
 
 1. Servidor TCP base: completado; continuar con epoll.
-2. Multiples clientes con epoll y sockets no bloqueantes.
+2. Multiples clientes con epoll y sockets no bloqueantes: completado.
 3. Parsing GET y encabezados Host, Connection y User-Agent.
 4. Archivos estaticos y MIME: HTML, CSS, JS, PNG y JPG.
 5. Estados 200, 400, 403, 404, 405 y 500; limites y rutas seguras con realpath.

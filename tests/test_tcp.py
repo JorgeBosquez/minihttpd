@@ -27,11 +27,11 @@ try:
     import select
     assert select.select([process.stdout], [], [], 3)[0], "Sin mensaje de inicio"
     assert "escuchando" in process.stdout.readline()
-    for _ in range(2):
-        with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
-            assert client.recv(1) == b"", "Se esperaba cierre sin respuesta HTTP"
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
+        client.shutdown(socket.SHUT_WR)
+        assert client.recv(1) == b"", "Se esperaba cierre tras EOF"
     assert process.poll() is None, "El servidor termino tras aceptar un cliente"
-    print("OK: dos conexiones aceptadas y cerradas; servidor sigue activo")
+    print("OK: cierre tras EOF; servidor sigue activo")
 finally:
     process.terminate()
     process.communicate(timeout=3)
