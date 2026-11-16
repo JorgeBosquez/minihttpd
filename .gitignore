@@ -1,0 +1,4 @@
+build/
+minihttpd
+*.o
+__pycache__/
