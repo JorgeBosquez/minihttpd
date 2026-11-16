@@ -1,5 +1,6 @@
 #include "http.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 
@@ -156,4 +157,36 @@ enum http_result http_parse(const char *data, size_t length,
     request->keep_alive = !close_seen;
     *consumed = header_size;
     return HTTP_OK;
+}
+
+int http_response(char *out, size_t capacity, int status, int keep_alive)
+{
+    const char *reason;
+    const char *body;
+    switch (status) {
+    case 200:
+        reason = "OK";
+        body = "MiniHTTPd: respuesta HTTP de prueba.\n";
+        break;
+    case 400:
+        reason = "Bad Request";
+        body = "400 Bad Request\n";
+        break;
+    case 405:
+        reason = "Method Not Allowed";
+        body = "405 Method Not Allowed\n";
+        break;
+    default:
+        return -1;
+    }
+    int count = snprintf(out, capacity,
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: %s\r\n%s\r\n%s",
+        status, reason, strlen(body), keep_alive ? "keep-alive" : "close",
+        status == 405 ? "Allow: GET\r\n" : "", body);
+    if (count < 0 || (size_t)count >= capacity)
+        return -1;
+    return count;
 }

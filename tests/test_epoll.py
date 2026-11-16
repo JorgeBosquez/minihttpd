@@ -1,94 +1,103 @@
-"""Comprueba progreso con clientes inactivos y lecturas repetidas."""
-import os
+"""Pruebas HTTP por red. Opcional: ruta a otro ejecutable como argumento."""
 import select
 import socket
+import struct
 import subprocess
-import time
+import sys
 
+binary = sys.argv[1] if len(sys.argv) > 1 else "./minihttpd"
 with socket.socket() as probe:
     probe.bind(("127.0.0.1", 0))
     port = probe.getsockname()[1]
-process = subprocess.Popen(["./minihttpd", str(port)], stdout=subprocess.PIPE,
+process = subprocess.Popen([binary, str(port)], stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE)
 clients = []
-pending = b""
 
-def line():
-    global pending
-    deadline = time.monotonic() + 3
-    while b"\n" not in pending:
-        remaining = deadline - time.monotonic()
-        assert remaining > 0 and select.select([process.stdout], [], [], remaining)[0], "Servidor no progresa"
-        data = os.read(process.stdout.fileno(), 4096)
-        assert data, "Servidor termino inesperadamente"
-        pending += data
-    result, pending = pending.split(b"\n", 1)
-    return result.decode()
+def connect():
+    client = socket.create_connection(("127.0.0.1", port), timeout=3)
+    clients.append(client)
+    return client
 
+class Reader:
+    def __init__(self, sock):
+        self.sock, self.pending = sock, b""
+
+    def response(self, expected, close=False):
+        while b"\r\n\r\n" not in self.pending:
+            data = self.sock.recv(4096)
+            assert data, "EOF antes de los encabezados"
+            self.pending += data
+        head, self.pending = self.pending.split(b"\r\n\r\n", 1)
+        lines = head.split(b"\r\n")
+        assert lines[0] == f"HTTP/1.1 {expected}".encode(), lines[0]
+        headers = dict(line.split(b": ", 1) for line in lines[1:])
+        size = int(headers[b"Content-Length"])
+        assert headers[b"Connection"] == (b"close" if close else b"keep-alive")
+        assert headers[b"Content-Type"] == b"text/plain; charset=utf-8"
+        if expected.startswith("405"):
+            assert headers[b"Allow"] == b"GET"
+        while len(self.pending) < size:
+            data = self.sock.recv(4096)
+            assert data, "EOF antes del cuerpo"
+            self.pending += data
+        body, self.pending = self.pending[:size], self.pending[size:]
+        expected_body = (b"MiniHTTPd: respuesta HTTP de prueba.\n" if expected.startswith("200")
+                         else expected.encode() + b"\n")
+        assert body == expected_body, body
+        if close:
+            assert not self.pending and self.sock.recv(1) == b""
+
+request = b"GET /index.html HTTP/1.1\r\nHost: local\r\n\r\n"
 try:
-    assert "epoll escuchando" in line()
-    for _ in range(8):
-        clients.append(socket.create_connection(("127.0.0.1", port), timeout=3))
-        assert "aceptada" in line()
-    # Todos siguen abiertos sin datos, incluido el primero.
-    for client in clients:
-        client.settimeout(0.1)
-        try:
-            client.recv(1)
-            raise AssertionError("El servidor cerro un cliente inactivo")
-        except socket.timeout:
-            pass
-        client.settimeout(3)
-    active = clients[-1]
-
-    def until(text):
-        # Una lectura TCP puede contener varios fragmentos; buscamos el evento.
-        for _ in range(1000):
-            entry = line()
-            if text in entry:
-                return entry
-        raise AssertionError("Evento no encontrado: " + text)
-
-    active.sendall(b"GET /fragmentada HTTP/1.1\r\nHost: local\r\n")
-    until("solicitud incompleta")
-    # Otro cliente puede completar una solicitud mientras active esta incompleto.
-    clients[0].sendall(b"GET /otro HTTP/1.1\r\nHost: local\r\n\r\n")
-    until("HTTP 200 GET /otro;")
-    active.sendall(b"\r\n")
-    until("HTTP 200 GET /fragmentada;")
-    print("OK: buffers independientes y progreso con solicitud fragmentada")
-
-    active.sendall(b"GET /uno HTTP/1.1\r\nHost: local\r\n\r\n"
-                   b"GET /dos HTTP/1.1\r\nHost: local\r\n\r\n")
-    until("HTTP 200 GET /uno;")
-    until("HTTP 200 GET /dos;")
-    print("OK: dos solicitudes en la misma conexion sin perder sobrantes")
-
-    clients[1].sendall(b"GET / HTTP/1.1\r\n\r\n")
-    until("HTTP 400")
-    assert clients[1].recv(1) == b""
-    clients[2].sendall(b"POST / HTTP/1.1\r\nHost: local\r\n\r\n")
-    until("HTTP 405")
-    assert clients[2].recv(1) == b""
-    clients[3].sendall(b"x" * 4097)
-    until("HTTP 400")
-    assert clients[3].recv(1) == b""
-    clients[4].sendall(b"GET /cierre HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n")
-    until("HTTP 200 GET /cierre;")
-    assert clients[4].recv(1) == b""
-    print("OK: errores, limites y Connection close")
-
-    # Cabeceras validas mayores que el antiguo buffer de lectura de 4096 bytes.
-    active.sendall(b"GET /grande HTTP/1.1\r\nHost: local\r\n" + b"X: a\r\n" * 800 + b"\r\n")
-    until("HTTP 200 GET /grande;")
-    active.shutdown(socket.SHUT_WR)
-    assert active.recv(1) == b""
-    with socket.create_connection(("127.0.0.1", port), timeout=3) as new:
-        until("aceptada")
-        new.sendall(b"GET /nuevo HTTP/1.1\r\nHost: local\r\n\r\n")
-        until("HTTP 200 GET /nuevo;")
+    assert select.select([process.stdout], [], [], 3)[0]
+    assert b"escuchando" in process.stdout.readline()
+    idle = [connect() for _ in range(8)]
+    active = idle[-1]
+    reader = Reader(active)
+    active.sendall(request[:-2])
+    assert not select.select([active], [], [], 0.1)[0], "Respuesta a solicitud incompleta"
+    other = idle[0]
+    other.sendall(request)
+    Reader(other).response("200 OK")
+    active.sendall(request[-2:])
+    reader.response("200 OK")
+    print("OK: respuesta real y progreso con otros clientes inactivos")
+    active.sendall(request * 3)
+    for _ in range(3):
+        reader.response("200 OK")
+    active.sendall(request)
+    reader.response("200 OK")
+    print("OK: pipeline en orden y reutilizacion posterior de conexion")
+    cases = [
+        (b"GET / HTTP/1.1\r\n\r\n", "400 Bad Request"),
+        (b"POST / HTTP/1.1\r\nHost: local\r\n\r\n", "405 Method Not Allowed"),
+        (b"x" * 4097, "400 Bad Request"),
+        (b"GET / HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n", "200 OK"),
+    ]
+    for payload, status in cases:
+        client = connect()
+        client.sendall(payload)
+        Reader(client).response(status, close=True)
+    print("OK: 400, 405 con Allow y cierre despues de respuesta completa")
+    client = connect()
+    client.sendall(request[:-2])
+    client.shutdown(socket.SHUT_WR)
+    Reader(client).response("400 Bad Request", close=True)
+    client = connect()
+    client.sendall(request)
+    client.shutdown(socket.SHUT_WR)
+    Reader(client).response("200 OK")
+    assert client.recv(1) == b""
+    print("OK: EOF con solicitud incompleta y media conexion cerrada")
+    broken = connect()
+    broken.sendall(request)
+    broken.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    broken.close()
+    client = connect()
+    client.sendall(request)
+    Reader(client).response("200 OK")
     assert process.poll() is None
-    print("OK: cabeceras grandes, EOF y aceptacion posterior")
+    print("OK: servidor sigue atendiendo tras desconexion abrupta")
 finally:
     for client in clients:
         client.close()

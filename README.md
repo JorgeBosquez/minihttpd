@@ -2,137 +2,106 @@
 
 Servidor HTTP/1.1 educativo en C para Linux, en desarrollo.
 
-## Estado actual
+## Estado actual: etapa 6
 
-Etapa 3: multiples clientes con epoll y sockets no bloqueantes.
-Etapa 5: cada cliente acumula bytes y analiza solicitudes HTTP.
-Los resultados se registran en terminal; todavia no se envian respuestas HTTP.
+Servidor con epoll, sockets no bloqueantes y buffers independientes por cliente.
+Analiza solicitudes y envia respuestas HTTP reales. Todo GET valido recibe por
+ahora el texto `MiniHTTPd: respuesta HTTP de prueba.`; aun no se consulta `www`.
+Las rutas inexistentes tambien reciben ese texto durante esta etapa.
 
-## Compilar en Ubuntu / WSL
+## Compilar y ejecutar en Ubuntu / WSL
 
-Requisitos: GCC, Make y Git.
+Requisitos: GCC, Make, Git; Python 3 para las pruebas de red.
 
 ```bash
 make
 ./minihttpd 8080
-make clean
 ```
 
-El puerto predeterminado es 8080; se admiten valores entre 1 y 65535.
-Escucha en todas las interfaces IPv4 (`0.0.0.0`). Ctrl+C termina el proceso;
-el sistema operativo libera sus sockets. Esta etapa usa epoll en modo level-triggered y sockets no bloqueantes.
-
-En otra terminal, verifica la conexion con Python:
+Puerto predeterminado 8080; admite 1-65535. Escucha en todas las interfaces IPv4.
+Ctrl+C termina el proceso y Linux libera sus recursos. En otra terminal:
 
 ```bash
-python3 -c 'import socket; s = socket.create_connection(("127.0.0.1", 8080)); s.sendall(b"GET /index.html HTTP/1.1\r\nHost: localhost:8080\r\n\r\n"); input("Conexion abierta. Enter para cerrar..."); s.close()'
+curl -v http://localhost:8080/index.html
+curl -v http://localhost:8080/ http://localhost:8080/index.html
+curl -v -X POST http://localhost:8080/
+curl -v -H 'Connection: close' http://localhost:8080/
 ```
 
-El servidor registra el resultado del parser. Conserva las solicitudes
-incompletas por cliente y los bytes sobrantes de otra solicitud. Aun no envia
-respuestas HTTP. Los errores y Connection: close cierran la conexion; en una
-etapa posterior el cierre se hara despues de enviar la respuesta. El navegador todavia no
-mostrara una pagina. `listen(..., 32)` solicita una cola de conexiones pendientes;
-`MAX_EVENTS=64` limita eventos por ronda, no el total de clientes.
-Si el puerto esta ocupado, el programa informa el error de bind y termina.
-
-## Pruebas
-
-Ejecutar desde la raiz del proyecto, sin iniciar manualmente otro servidor:
-
-```bash
-make
-python3 tests/test_tcp.py
-python3 tests/test_epoll.py
-```
-
-Las pruebas abren sus propios servidores en puertos disponibles. Verifican
-argumentos invalidos, puerto ocupado, EOF, ocho conexiones simultaneas,
-lecturas repetidas y recepcion de mas bytes que el buffer. El cliente activo
-progresa aunque los otros no envien datos. No se han implementado aun limites
-de conexiones ni plazos de inactividad.
+La segunda orden permite observar reutilizacion de la conexion. POST devuelve
+405 con Allow: GET. Un GET mal formado devuelve 400. Los errores cierran despues
+del envio; HTTP/1.1 mantiene la conexion por defecto y respeta Connection: close.
+Content-Length delimita cada cuerpo. Las respuestas usan CRLF y text/plain.
 
 ## Organizacion
 
-- `src/main.c`: entrada del programa y validacion del puerto.
-- `src/server.c`, `include/server.h`: sockets, conexiones y bucle epoll.
-- `src/http.c`, `include/http.h`: solicitudes y respuestas HTTP.
-- `src/files.c`, `include/files.h`: acceso seguro a archivos.
-- `src/mime.c`, `include/mime.h`: tipos de contenido.
-- `www/`: contenido estatico de prueba.
+- `src/main.c`: entrada y validacion del puerto.
+- `src/server.c`, `include/server.h`: sockets, epoll, buffers y envios parciales.
+- `src/http.c`, `include/http.h`: parser y respuestas HTTP de texto.
+- `src/files.c`, `include/files.h`: acceso a archivos pendiente.
+- `src/mime.c`, `include/mime.h`: tipos MIME pendientes.
+- `www/`: contenido estatico para una etapa posterior.
+- `tests/`: pruebas durante el desarrollo; se retiraran al preparar la entrega.
 
-## Referencias de codigo
+## Ciclo de cada cliente
 
-Se estudiaran los ejemplos de Comer y Stevens de la carpeta local
-`V3.linux/V3.linux/examples` (distribucion Linux/POSIX de
-Internetworking with TCP/IP, volumen III):
+Se acumulan bytes hasta completar cabeceras. El parser consume una solicitud;
+memmove conserva bytes de la siguiente. Se prepara una respuesta y se vigila
+EPOLLOUT, pausando lecturas para no acumular respuestas sin limite. send usa
+MSG_NOSIGNAL y guarda el desplazamiento para continuar tras un envio parcial
+o EAGAIN. Al terminar se procesa el siguiente mensaje ya recibido o se vuelve
+a EPOLLIN. Connection: close termina la sesion despues de enviar el cuerpo.
+Una solicitud valida seguida de cierre de escritura del cliente recibe respuesta;
+un EOF con cabeceras incompletas recibe 400 y cierre.
 
-- `passiveTCP.c`, `passivesock.c`: socket de escucha.
-- `TCPmechod.c`: multiplexacion con select, para entender la transicion a epoll.
-- `TCPechod.c`: aceptar conexiones y transferir bytes.
+Se usa epoll level-triggered. MAX_EVENTS=64 limita eventos por ronda, no clientes.
+listen(..., 32) solicita la cola de conexiones pendientes. No hay limite global
+de conexiones ni plazos de inactividad todavia.
 
-El servidor TCP sigue la secuencia socket/bind/listen de esos ejemplos, con
-una implementacion propia documentada en src/server.c. Al adaptar fragmentos se documentara
-su procedencia y se conservaran los avisos pertinentes.
+## Parser y limites
 
-## Etapas pendientes
-
-1. Servidor TCP base: completado; continuar con epoll.
-2. Multiples clientes con epoll y sockets no bloqueantes: completado.
-3. Parsing GET y encabezados Host, Connection y User-Agent.
-4. Archivos estaticos y MIME: HTML, CSS, JS, PNG y JPG.
-5. Estados 200, 400, 403, 404, 405 y 500; limites y rutas seguras con realpath.
-6. Conexiones persistentes y manejo de lecturas y escrituras parciales.
-7. Pruebas integrales y documentacion final.
-
-El informe final se redactara a partir de las pruebas y experiencias reales.
-
-## Parser HTTP (etapa 4)
-
-`http_parse` en `src/http.c` recibe bytes y longitud, sin requerir terminador NUL.
-Se prueba por separado y tambien se invoca desde el bucle epoll con un buffer
-independiente por cliente.
-No se envian respuestas HTTP en esta etapa.
-
-- Resultado 0: solicitud incompleta; el futuro llamador acumulara mas bytes.
-- Resultado 200: GET valido; entrega URI, Host, User-Agent y keep_alive.
-- Resultado 400: sintaxis invalida o limites excedidos.
-- Resultado 405: metodo distinto de GET con estructura valida.
-
-Estos resultados son valores internos, aun no respuestas enviadas por red.
-Se admite HTTP/1.1 y rutas origin-form que empiezan por `/`. No se implementan
-HTTP/1.0, absolute-form ni cuerpos de solicitudes. Se rechaza Transfer-Encoding y
-Content-Length distinto de cero. Host es obligatorio y no se permiten duplicados;
-la validacion completa de la autoridad Host no esta implementada. Los encabezados
-no reconocidos se ignoran despues de validar su sintaxis. Connection: close
-prevalece, incluso si aparecen varios encabezados Connection.
+HTTP/1.1, GET y rutas que empiezan por `/`. Host obligatorio y unico; se leen
+Connection y User-Agent. Los nombres de cabecera no distinguen mayusculas.
+No admite HTTP/1.0, absolute-form, cuerpos ni Transfer-Encoding. Content-Length
+solo puede indicar cero. La validacion completa de autoridad Host esta pendiente.
 
 Limites: 16 KiB de cabeceras, 4096 bytes por linea contando CR, URI de 2048 bytes,
-Host y User-Agent de 1024 bytes cada uno. Los limites producen resultado 400.
-El parser devuelve cuantos bytes pertenecen a la primera solicitud para que el
-servidor pueda conservar una segunda solicitud recibida en la misma lectura.
-La acumulacion por cliente esta implementada; el envio no bloqueante sigue pendiente.
+Host y User-Agent de 1024 bytes. Solicitudes que exceden los limites dan 400.
+Referencia: https://www.rfc-editor.org/rfc/rfc9112.html
+
+## Pruebas
+
+Desde la raiz, sin iniciar manualmente otro servidor:
 
 ```bash
+make
 make test-http
+python3 tests/test_tcp.py
+python3 tests/test_epoll.py
+make test-partial
 ```
 
-Esta prueba esta escrita en C. Comprueba solicitudes fragmentadas, campos,
-metodos, errores, limites y bytes sobrantes. Referencia de sintaxis:
-https://www.rfc-editor.org/rfc/rfc9112.html
+Las pruebas de red arrancan y detienen sus propios servidores. Verifican clientes
+inactivos, fragmentacion, pipeline, cuerpos y Content-Length, 400/405, cierres,
+EOF y desconexion abrupta. test-partial compila un ejecutable separado que limita
+send a siete bytes e inyecta EAGAIN; ejecuta las mismas pruebas para comprobar
+que los encabezados y cuerpos llegan completos y en orden. El binario normal
+no incluye esa instrumentacion.
 
-## Integracion del parser con epoll (etapa 5)
+## Referencias de los ejemplos
 
-Cada cliente tiene descriptor, buffer de hasta 16 KiB y cantidad de bytes usados.
-`epoll_event.data.ptr` identifica ese estado sin usar el descriptor como indice.
-Una lista enlazada registra los clientes para liberar sus buffers al cerrar o
-si falla el bucle de eventos. No hay limite global de conexiones aun.
+Comer y Stevens, Internetworking with TCP/IP, volumen III, distribucion Linux/POSIX,
+carpeta local V3.linux/V3.linux/examples:
 
-Al recibir datos, el parser devuelve incompleto, valido o error. Una solicitud
-valida consume solo sus bytes; memmove conserva el resto para la siguiente.
-No se procesan solicitudes posteriores a Connection: close. Los estados HTTP
-se muestran en stdout, sin enviarlos por red. Al finalizar esta etapa, curl y
-el navegador aun no pueden obtener una respuesta HTTP.
+- passiveTCP.c y passivesock.c: secuencia socket/bind/listen.
+- TCPmechod.c: multiplexacion con select como referencia para epoll.
+- TCPechod.c: conexiones y transferencia de bytes.
 
-`python3 tests/test_epoll.py` verifica buffers independientes, fragmentacion,
-solicitudes consecutivas, errores 400/405, limites, cabeceras grandes y cierres.
+Implementacion propia basada en el estudio de esas ideas. Al adaptar fragmentos
+se documentara la procedencia y se conservaran los avisos pertinentes.
+
+## Pendiente
+
+Archivos estaticos, MIME, errores 403/404/500, proteccion de rutas con realpath,
+revision final de limites y seguridad, documentacion e informe de una pagina.
+El informe reflejara las pruebas y experiencias reales del proyecto.

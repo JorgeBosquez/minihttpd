@@ -26,3 +26,10 @@ test-http: build/test_http
 
 build/test_http: tests/test_http.c src/http.c include/http.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_http.c src/http.c -o $@
+
+.PHONY: test-partial
+test-partial: build/minihttpd_partial
+	python3 tests/test_epoll.py ./build/minihttpd_partial
+
+build/minihttpd_partial: $(SOURCES) $(wildcard include/*.h) tests/partial_send.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) tests/partial_send.c -Wl,--wrap=send -o $@

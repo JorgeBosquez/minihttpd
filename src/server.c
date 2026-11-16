@@ -20,6 +20,10 @@ struct client {
     int fd;
     size_t used;
     char input[HTTP_MAX_HEADERS];
+    char output[1024];
+    size_t output_size;
+    size_t sent;
+    int close_after_send;
     struct client *previous;
     struct client *next;
 };
@@ -133,53 +137,92 @@ static int accept_clients(int epoll_fd, int listener, struct client **head)
     return 0;
 }
 
-static void read_client(int epoll_fd, struct client *client, struct client **head)
+/* Solo vigilamos escritura mientras hay una respuesta pendiente.
+ * Durante ese envio pausamos lecturas para mantener acotada la memoria.
+ */
+static int change_interest(int epoll_fd, struct client *client, uint32_t events)
+{
+    struct epoll_event event = {0};
+    event.events = events;
+    event.data.ptr = client;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, client->fd, &event) < 0) {
+        perror("epoll_ctl MOD");
+        return -1;
+    }
+    return 0;
+}
+
+static int queue_response(int epoll_fd, struct client *client, int status, int keep)
+{
+    int size = http_response(client->output, sizeof(client->output), status, keep);
+    if (size < 0)
+        return -1;
+    client->output_size = (size_t)size;
+    client->sent = 0;
+    client->close_after_send = !keep;
+    return change_interest(epoll_fd, client, EPOLLOUT);
+}
+
+static int process_input(int epoll_fd, struct client *client)
+{
+    if (!client->used)
+        return change_interest(epoll_fd, client, EPOLLIN);
+    struct http_request request;
+    size_t consumed;
+    enum http_result result = http_parse(client->input, client->used,
+                                         &request, &consumed);
+    if (result == HTTP_INCOMPLETE)
+        return change_interest(epoll_fd, client, EPOLLIN);
+    if (result != HTTP_OK) {
+        client->used = 0;
+        return queue_response(epoll_fd, client, result, 0);
+    }
+    client->used -= consumed;
+    memmove(client->input, client->input + consumed, client->used);
+    /* Por ahora todo GET valido recibe texto fijo, sin acceder a www. */
+    return queue_response(epoll_fd, client, 200, request.keep_alive);
+}
+
+/* Devuelven -1 cuando el llamador debe cerrar y liberar el cliente. */
+static int read_client(int epoll_fd, struct client *client)
 {
     ssize_t count = recv(client->fd, client->input + client->used,
                          sizeof(client->input) - client->used, 0);
-    if (count <= 0) {
-        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
-            return;
-        if (count < 0)
-            perror("recv");
-        else if (client->used)
-            printf("Cliente %d: HTTP 400 (EOF con solicitud incompleta).\n", client->fd);
-        fflush(stdout);
-        close_client(epoll_fd, client, head);
-        return;
+    if (count < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            return 0;
+        perror("recv");
+        return -1;
+    }
+    if (count == 0) {
+        if (client->used)
+            return queue_response(epoll_fd, client, 400, 0);
+        return -1;
     }
     client->used += (size_t)count;
-    while (client->used) {
-        struct http_request request;
-        size_t consumed;
-        enum http_result result = http_parse(client->input, client->used,
-                                             &request, &consumed);
-        if (result == HTTP_INCOMPLETE) {
-            printf("Cliente %d: solicitud incompleta (%zu bytes).\n",
-                   client->fd, client->used);
-            fflush(stdout);
-            return;
-        }
-        if (result != HTTP_OK) {
-            printf("Cliente %d: HTTP %d (resultado del parser; sin respuesta aun).\n",
-                   client->fd, result);
-            fflush(stdout);
-            close_client(epoll_fd, client, head);
-            return;
-        }
-        printf("Cliente %d: HTTP 200 GET %s; Host=%s; persistente=%s.\n",
-               client->fd, request.uri, request.host,
-               request.keep_alive ? "si" : "no");
-        fflush(stdout);
-        /* Conservamos bytes de una posible solicitud siguiente (pipeline). */
-        client->used -= consumed;
-        memmove(client->input, client->input + consumed, client->used);
-        if (!request.keep_alive) {
-            /* Temporal: al enviar respuestas, cerraremos DESPUES del envio. */
-            close_client(epoll_fd, client, head);
-            return;
-        }
+    return process_input(epoll_fd, client);
+}
+
+static int write_client(int epoll_fd, struct client *client)
+{
+    ssize_t count = send(client->fd, client->output + client->sent,
+                         client->output_size - client->sent, MSG_NOSIGNAL);
+    if (count < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            return 0; /* epoll avisara otra vez; no perdemos el desplazamiento. */
+        perror("send");
+        return -1;
     }
+    if (count == 0)
+        return -1;
+    client->sent += (size_t)count;
+    if (client->sent < client->output_size)
+        return 0;
+    client->output_size = client->sent = 0;
+    if (client->close_after_send)
+        return -1;
+    /* Procesar sobrantes ahora evita esperar un EPOLLIN que podria no llegar. */
+    return process_input(epoll_fd, client);
 }
 
 int server_run(unsigned short port)
@@ -227,10 +270,16 @@ int server_run(unsigned short port)
                     goto done;
                 }
             } else {
-                /* recv procesa datos, EOF y errores, incluidos HUP/ERR.
-                 * No cerramos antes de consumir datos pendientes de un HUP.
-                 */
-                read_client(epoll_fd, client, &clients);
+                int status;
+                if (events[i].events & EPOLLERR) {
+                    status = -1;
+                } else if (client->output_size) {
+                    status = write_client(epoll_fd, client);
+                } else {
+                    status = read_client(epoll_fd, client);
+                }
+                if (status < 0)
+                    close_client(epoll_fd, client, &clients);
             }
         }
     }
