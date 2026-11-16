@@ -5,7 +5,8 @@ Servidor HTTP/1.1 educativo en C para Linux, en desarrollo.
 ## Estado actual
 
 Etapa 3: multiples clientes con epoll y sockets no bloqueantes.
-Mantiene conexiones abiertas y lee sus bytes; todavia no sirve HTTP.
+Etapa 5: cada cliente acumula bytes y analiza solicitudes HTTP.
+Los resultados se registran en terminal; todavia no se envian respuestas HTTP.
 
 ## Compilar en Ubuntu / WSL
 
@@ -24,12 +25,13 @@ el sistema operativo libera sus sockets. Esta etapa usa epoll en modo level-trig
 En otra terminal, verifica la conexion con Python:
 
 ```bash
-python3 -c 'import socket; s = socket.create_connection(("127.0.0.1", 8080)); s.sendall(b"hola"); input("Conexion abierta. Enter para cerrar..."); s.close()'
+python3 -c 'import socket; s = socket.create_connection(("127.0.0.1", 8080)); s.sendall(b"GET /index.html HTTP/1.1\r\nHost: localhost:8080\r\n\r\n"); input("Conexion abierta. Enter para cerrar..."); s.close()'
 ```
 
-El servidor registra los bytes recibidos y mantiene la conexion abierta hasta
-que el cliente cierre. Los datos se descartan en esta etapa: no hay parsing,
-respuestas HTTP ni keep-alive HTTP implementados aun. El navegador todavia no
+El servidor registra el resultado del parser. Conserva las solicitudes
+incompletas por cliente y los bytes sobrantes de otra solicitud. Aun no envia
+respuestas HTTP. Los errores y Connection: close cierran la conexion; en una
+etapa posterior el cierre se hara despues de enviar la respuesta. El navegador todavia no
 mostrara una pagina. `listen(..., 32)` solicita una cola de conexiones pendientes;
 `MAX_EVENTS=64` limita eventos por ronda, no el total de clientes.
 Si el puerto esta ocupado, el programa informa el error de bind y termina.
@@ -88,7 +90,8 @@ El informe final se redactara a partir de las pruebas y experiencias reales.
 ## Parser HTTP (etapa 4)
 
 `http_parse` en `src/http.c` recibe bytes y longitud, sin requerir terminador NUL.
-Se prueba por separado; el bucle epoll aun no lo invoca y sigue descartando datos.
+Se prueba por separado y tambien se invoca desde el bucle epoll con un buffer
+independiente por cliente.
 No se envian respuestas HTTP en esta etapa.
 
 - Resultado 0: solicitud incompleta; el futuro llamador acumulara mas bytes.
@@ -108,7 +111,7 @@ Limites: 16 KiB de cabeceras, 4096 bytes por linea contando CR, URI de 2048 byte
 Host y User-Agent de 1024 bytes cada uno. Los limites producen resultado 400.
 El parser devuelve cuantos bytes pertenecen a la primera solicitud para que el
 servidor pueda conservar una segunda solicitud recibida en la misma lectura.
-La acumulacion por cliente y el envio no bloqueante se implementaran despues.
+La acumulacion por cliente esta implementada; el envio no bloqueante sigue pendiente.
 
 ```bash
 make test-http
@@ -117,3 +120,19 @@ make test-http
 Esta prueba esta escrita en C. Comprueba solicitudes fragmentadas, campos,
 metodos, errores, limites y bytes sobrantes. Referencia de sintaxis:
 https://www.rfc-editor.org/rfc/rfc9112.html
+
+## Integracion del parser con epoll (etapa 5)
+
+Cada cliente tiene descriptor, buffer de hasta 16 KiB y cantidad de bytes usados.
+`epoll_event.data.ptr` identifica ese estado sin usar el descriptor como indice.
+Una lista enlazada registra los clientes para liberar sus buffers al cerrar o
+si falla el bucle de eventos. No hay limite global de conexiones aun.
+
+Al recibir datos, el parser devuelve incompleto, valido o error. Una solicitud
+valida consume solo sus bytes; memmove conserva el resto para la siguiente.
+No se procesan solicitudes posteriores a Connection: close. Los estados HTTP
+se muestran en stdout, sin enviarlos por red. Al finalizar esta etapa, curl y
+el navegador aun no pueden obtener una respuesta HTTP.
+
+`python3 tests/test_epoll.py` verifica buffers independientes, fragmentacion,
+solicitudes consecutivas, errores 400/405, limites, cabeceras grandes y cierres.

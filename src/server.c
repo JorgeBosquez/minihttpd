@@ -1,16 +1,28 @@
 #include "server.h"
+#include "http.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
 #define LISTEN_BACKLOG 32
 #define MAX_EVENTS 64
+
+/* epoll guarda un puntero al estado de cada conexion. */
+struct client {
+    int fd;
+    size_t used;
+    char input[HTTP_MAX_HEADERS];
+    struct client *previous;
+    struct client *next;
+};
 
 /* Referencia conceptual: passiveTCP.c y passivesock.c de Comer y Stevens,
  * Internetworking with TCP/IP, volumen III, distribucion Linux/POSIX.
@@ -61,32 +73,37 @@ static int set_nonblocking(int fd)
     return 0;
 }
 
-static int watch_readable(int epoll_fd, int fd)
+static int watch_readable(int epoll_fd, struct client *client)
 {
     /* Modo level-triggered: vuelve a avisar mientras queden datos por leer. */
     struct epoll_event event = {0};
     event.events = EPOLLIN;
-    event.data.fd = fd;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) < 0) {
+    event.data.ptr = client;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client->fd, &event) < 0) {
         perror("epoll_ctl ADD");
         return -1;
     }
     return 0;
 }
 
-static void close_client(int epoll_fd, int client)
+static void close_client(int epoll_fd, struct client *client, struct client **head)
 {
-    /* close tambien retira el socket de epoll; DEL hace explicita la retirada. */
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client, NULL);
-    close(client);
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client->fd, NULL);
+    close(client->fd);
+    if (client->previous)
+        client->previous->next = client->next;
+    else
+        *head = client->next;
+    if (client->next)
+        client->next->previous = client->previous;
+    free(client);
 }
 
-static int accept_clients(int epoll_fd, int listener)
+static int accept_clients(int epoll_fd, int listener, struct client **head)
 {
-    /* Un limite por ronda permite volver a atender clientes existentes. */
     for (int i = 0; i < MAX_EVENTS; ++i) {
-        int client = accept(listener, NULL, NULL);
-        if (client < 0) {
+        int fd = accept(listener, NULL, NULL);
+        if (fd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
                 return 0;
             if (errno == EINTR || errno == ECONNABORTED)
@@ -94,34 +111,75 @@ static int accept_clients(int epoll_fd, int listener)
             perror("accept");
             return -1;
         }
-        if (set_nonblocking(client) < 0 || watch_readable(epoll_fd, client) < 0) {
-            close(client);
+        struct client *client = calloc(1, sizeof(*client));
+        if (!client) {
+            perror("calloc");
+            close(fd);
             continue;
         }
-        printf("Conexion TCP aceptada; descriptor %d.\n", client);
+        client->fd = fd;
+        if (set_nonblocking(fd) < 0 || watch_readable(epoll_fd, client) < 0) {
+            close(fd);
+            free(client);
+            continue;
+        }
+        client->next = *head;
+        if (*head)
+            (*head)->previous = client;
+        *head = client;
+        printf("Conexion TCP aceptada; descriptor %d.\n", fd);
         fflush(stdout);
     }
     return 0;
 }
 
-static void read_client(int epoll_fd, int client)
+static void read_client(int epoll_fd, struct client *client, struct client **head)
 {
-    char buffer[4096];
-    /* Una lectura por evento limita el trabajo de cada cliente por ronda.
-     * Al usar level-triggered, epoll avisara otra vez si aun quedan datos.
-     */
-    ssize_t count = recv(client, buffer, sizeof(buffer), 0);
-    if (count > 0) {
-        printf("Cliente %d: recibidos %zd bytes.\n", client, count);
+    ssize_t count = recv(client->fd, client->input + client->used,
+                         sizeof(client->input) - client->used, 0);
+    if (count <= 0) {
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+            return;
+        if (count < 0)
+            perror("recv");
+        else if (client->used)
+            printf("Cliente %d: HTTP 400 (EOF con solicitud incompleta).\n", client->fd);
         fflush(stdout);
-        /* Etapa epoll: descartamos los bytes; HTTP vendra despues. */
+        close_client(epoll_fd, client, head);
         return;
     }
-    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
-        return;
-    if (count < 0)
-        perror("recv");
-    close_client(epoll_fd, client);
+    client->used += (size_t)count;
+    while (client->used) {
+        struct http_request request;
+        size_t consumed;
+        enum http_result result = http_parse(client->input, client->used,
+                                             &request, &consumed);
+        if (result == HTTP_INCOMPLETE) {
+            printf("Cliente %d: solicitud incompleta (%zu bytes).\n",
+                   client->fd, client->used);
+            fflush(stdout);
+            return;
+        }
+        if (result != HTTP_OK) {
+            printf("Cliente %d: HTTP %d (resultado del parser; sin respuesta aun).\n",
+                   client->fd, result);
+            fflush(stdout);
+            close_client(epoll_fd, client, head);
+            return;
+        }
+        printf("Cliente %d: HTTP 200 GET %s; Host=%s; persistente=%s.\n",
+               client->fd, request.uri, request.host,
+               request.keep_alive ? "si" : "no");
+        fflush(stdout);
+        /* Conservamos bytes de una posible solicitud siguiente (pipeline). */
+        client->used -= consumed;
+        memmove(client->input, client->input + consumed, client->used);
+        if (!request.keep_alive) {
+            /* Temporal: al enviar respuestas, cerraremos DESPUES del envio. */
+            close_client(epoll_fd, client, head);
+            return;
+        }
+    }
 }
 
 int server_run(unsigned short port)
@@ -139,7 +197,9 @@ int server_run(unsigned short port)
         close(listener);
         return -1;
     }
-    if (watch_readable(epoll_fd, listener) < 0) {
+    struct client listener_state = {.fd = listener};
+    struct client *clients = NULL;
+    if (watch_readable(epoll_fd, &listener_state) < 0) {
         close(epoll_fd);
         close(listener);
         return -1;
@@ -160,9 +220,9 @@ int server_run(unsigned short port)
             break;
         }
         for (int i = 0; i < ready; ++i) {
-            int fd = events[i].data.fd;
-            if (fd == listener) {
-                if (accept_clients(epoll_fd, listener) < 0) {
+            struct client *client = events[i].data.ptr;
+            if (client == &listener_state) {
+                if (accept_clients(epoll_fd, listener, &clients) < 0) {
                     result = -1;
                     goto done;
                 }
@@ -170,13 +230,14 @@ int server_run(unsigned short port)
                 /* recv procesa datos, EOF y errores, incluidos HUP/ERR.
                  * No cerramos antes de consumir datos pendientes de un HUP.
                  */
-                read_client(epoll_fd, fd);
+                read_client(epoll_fd, client, &clients);
             }
         }
     }
 done:
+    while (clients)
+        close_client(epoll_fd, clients, &clients);
     close(epoll_fd);
     close(listener);
-    /* main termina inmediatamente; Linux libera los clientes restantes. */
     return result;
 }

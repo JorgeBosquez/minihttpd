@@ -40,25 +40,55 @@ try:
             pass
         client.settimeout(3)
     active = clients[-1]
-    for payload in (b"hola", b"segunda lectura"):
-        active.sendall(payload)
-        assert f"recibidos {len(payload)} bytes" in line()
-    print("OK: ocho clientes abiertos; el ultimo progresa con los otros inactivos")
-    active.sendall(b"x" * 20000)
-    total = 0
-    while total < 20000:
-        entry = line()
-        total += int(entry.split("recibidos ")[1].split()[0])
-    assert total == 20000
-    print("OK: datos mayores que el buffer se consumen en varios eventos")
+
+    def until(text):
+        # Una lectura TCP puede contener varios fragmentos; buscamos el evento.
+        for _ in range(1000):
+            entry = line()
+            if text in entry:
+                return entry
+        raise AssertionError("Evento no encontrado: " + text)
+
+    active.sendall(b"GET /fragmentada HTTP/1.1\r\nHost: local\r\n")
+    until("solicitud incompleta")
+    # Otro cliente puede completar una solicitud mientras active esta incompleto.
+    clients[0].sendall(b"GET /otro HTTP/1.1\r\nHost: local\r\n\r\n")
+    until("HTTP 200 GET /otro;")
+    active.sendall(b"\r\n")
+    until("HTTP 200 GET /fragmentada;")
+    print("OK: buffers independientes y progreso con solicitud fragmentada")
+
+    active.sendall(b"GET /uno HTTP/1.1\r\nHost: local\r\n\r\n"
+                   b"GET /dos HTTP/1.1\r\nHost: local\r\n\r\n")
+    until("HTTP 200 GET /uno;")
+    until("HTTP 200 GET /dos;")
+    print("OK: dos solicitudes en la misma conexion sin perder sobrantes")
+
+    clients[1].sendall(b"GET / HTTP/1.1\r\n\r\n")
+    until("HTTP 400")
+    assert clients[1].recv(1) == b""
+    clients[2].sendall(b"POST / HTTP/1.1\r\nHost: local\r\n\r\n")
+    until("HTTP 405")
+    assert clients[2].recv(1) == b""
+    clients[3].sendall(b"x" * 4097)
+    until("HTTP 400")
+    assert clients[3].recv(1) == b""
+    clients[4].sendall(b"GET /cierre HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n")
+    until("HTTP 200 GET /cierre;")
+    assert clients[4].recv(1) == b""
+    print("OK: errores, limites y Connection close")
+
+    # Cabeceras validas mayores que el antiguo buffer de lectura de 4096 bytes.
+    active.sendall(b"GET /grande HTTP/1.1\r\nHost: local\r\n" + b"X: a\r\n" * 800 + b"\r\n")
+    until("HTTP 200 GET /grande;")
     active.shutdown(socket.SHUT_WR)
     assert active.recv(1) == b""
     with socket.create_connection(("127.0.0.1", port), timeout=3) as new:
-        assert "aceptada" in line()
-        new.sendall(b"nuevo")
-        assert "recibidos 5 bytes" in line()
+        until("aceptada")
+        new.sendall(b"GET /nuevo HTTP/1.1\r\nHost: local\r\n\r\n")
+        until("HTTP 200 GET /nuevo;")
     assert process.poll() is None
-    print("OK: cierre por EOF y aceptacion posterior")
+    print("OK: cabeceras grandes, EOF y aceptacion posterior")
 finally:
     for client in clients:
         client.close()
