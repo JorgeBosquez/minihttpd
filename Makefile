@@ -2,7 +2,7 @@ CC = gcc
 CPPFLAGS = -Iinclude -D_POSIX_C_SOURCE=200809L
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g
 # Los modulos pendientes se agregaran cuando tengan implementacion.
-SOURCES = src/main.c src/server.c
+SOURCES = src/main.c src/server.c src/http.c
 OBJECTS = $(SOURCES:src/%.c=build/%.o)
 
 .PHONY: all clean
@@ -19,3 +19,10 @@ build:
 
 clean:
 	rm -rf build minihttpd
+
+.PHONY: test-http
+test-http: build/test_http
+	./build/test_http
+
+build/test_http: tests/test_http.c src/http.c include/http.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_http.c src/http.c -o $@

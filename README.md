@@ -84,3 +84,36 @@ su procedencia y se conservaran los avisos pertinentes.
 7. Pruebas integrales y documentacion final.
 
 El informe final se redactara a partir de las pruebas y experiencias reales.
+
+## Parser HTTP (etapa 4)
+
+`http_parse` en `src/http.c` recibe bytes y longitud, sin requerir terminador NUL.
+Se prueba por separado; el bucle epoll aun no lo invoca y sigue descartando datos.
+No se envian respuestas HTTP en esta etapa.
+
+- Resultado 0: solicitud incompleta; el futuro llamador acumulara mas bytes.
+- Resultado 200: GET valido; entrega URI, Host, User-Agent y keep_alive.
+- Resultado 400: sintaxis invalida o limites excedidos.
+- Resultado 405: metodo distinto de GET con estructura valida.
+
+Estos resultados son valores internos, aun no respuestas enviadas por red.
+Se admite HTTP/1.1 y rutas origin-form que empiezan por `/`. No se implementan
+HTTP/1.0, absolute-form ni cuerpos de solicitudes. Se rechaza Transfer-Encoding y
+Content-Length distinto de cero. Host es obligatorio y no se permiten duplicados;
+la validacion completa de la autoridad Host no esta implementada. Los encabezados
+no reconocidos se ignoran despues de validar su sintaxis. Connection: close
+prevalece, incluso si aparecen varios encabezados Connection.
+
+Limites: 16 KiB de cabeceras, 4096 bytes por linea contando CR, URI de 2048 bytes,
+Host y User-Agent de 1024 bytes cada uno. Los limites producen resultado 400.
+El parser devuelve cuantos bytes pertenecen a la primera solicitud para que el
+servidor pueda conservar una segunda solicitud recibida en la misma lectura.
+La acumulacion por cliente y el envio no bloqueante se implementaran despues.
+
+```bash
+make test-http
+```
+
+Esta prueba esta escrita en C. Comprueba solicitudes fragmentadas, campos,
+metodos, errores, limites y bytes sobrantes. Referencia de sintaxis:
+https://www.rfc-editor.org/rfc/rfc9112.html
