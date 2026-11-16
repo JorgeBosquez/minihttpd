@@ -1,7 +1,8 @@
 CC = gcc
 CPPFLAGS = -Iinclude -D_POSIX_C_SOURCE=200809L
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g
-SOURCES = src/main.c src/server.c src/http.c src/files.c src/mime.c
+# Los modulos pendientes se agregaran cuando tengan implementacion.
+SOURCES = src/main.c src/server.c
 OBJECTS = $(SOURCES:src/%.c=build/%.o)
 
 .PHONY: all clean

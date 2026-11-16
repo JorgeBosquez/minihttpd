@@ -4,7 +4,7 @@ Servidor HTTP/1.1 educativo en C para Linux, en desarrollo.
 
 ## Estado actual
 
-Etapa 1: estructura y programa inicial. Todavia no abre sockets ni sirve HTTP.
+Etapa 2: servidor TCP base. Acepta conexiones y las cierra; todavia no sirve HTTP.
 
 ## Compilar en Ubuntu / WSL
 
@@ -12,11 +12,24 @@ Requisitos: GCC, Make y Git.
 
 ```bash
 make
-./minihttpd
+./minihttpd 8080
 make clean
 ```
 
-El programa inicial imprime un mensaje y termina.
+El puerto predeterminado es 8080; se admiten valores entre 1 y 65535.
+Escucha en todas las interfaces IPv4 (`0.0.0.0`). Ctrl+C termina el proceso;
+el sistema operativo libera sus sockets. Esta etapa usa accept bloqueante.
+
+En otra terminal, verifica la conexion con Python:
+
+```bash
+python3 -c 'import socket; s = socket.create_connection(("127.0.0.1", 8080)); print("Conectado; cierre del servidor:", s.recv(1)); s.close()'
+```
+
+El resultado esperado es `b''`, porque el servidor acepta y cierra sin enviar
+contenido. El navegador todavia no mostrara una pagina. `listen(..., 32)` establece
+la cola solicitada de conexiones pendientes; no limita el total de clientes.
+Si el puerto esta ocupado, el programa informa el error de bind y termina.
 
 ## Organizacion
 
@@ -37,12 +50,13 @@ Internetworking with TCP/IP, volumen III):
 - `TCPmechod.c`: multiplexacion con select, para entender la transicion a epoll.
 - `TCPechod.c`: aceptar conexiones y transferir bytes.
 
-Esta etapa no copia codigo de esos archivos. Al adaptar fragmentos se documentara
+El servidor TCP sigue la secuencia socket/bind/listen de esos ejemplos, con
+una implementacion propia documentada en src/server.c. Al adaptar fragmentos se documentara
 su procedencia y se conservaran los avisos pertinentes.
 
 ## Etapas pendientes
 
-1. Servidor TCP base.
+1. Servidor TCP base: completado; continuar con epoll.
 2. Multiples clientes con epoll y sockets no bloqueantes.
 3. Parsing GET y encabezados Host, Connection y User-Agent.
 4. Archivos estaticos y MIME: HTML, CSS, JS, PNG y JPG.

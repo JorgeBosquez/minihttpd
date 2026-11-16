@@ -1,6 +1,7 @@
 #ifndef MINIHTTPD_SERVER_H
 #define MINIHTTPD_SERVER_H
 
-/* Interfaz pendiente: se definira en la etapa correspondiente. */
+/* Devuelve 0 al terminar normalmente, o -1 si falla el servidor. */
+int server_run(unsigned short port);
 
 #endif
