@@ -4,6 +4,7 @@ import socket
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 binary = sys.argv[1] if len(sys.argv) > 1 else "./minihttpd"
 with socket.socket() as probe:
@@ -33,7 +34,7 @@ class Reader:
         headers = dict(line.split(b": ", 1) for line in lines[1:])
         size = int(headers[b"Content-Length"])
         assert headers[b"Connection"] == (b"close" if close else b"keep-alive")
-        assert headers[b"Content-Type"] == b"text/plain; charset=utf-8"
+        assert headers[b"Content-Type"] == (b"text/html" if expected.startswith("200") else b"text/plain; charset=utf-8")
         if expected.startswith("405"):
             assert headers[b"Allow"] == b"GET"
         while len(self.pending) < size:
@@ -41,7 +42,7 @@ class Reader:
             assert data, "EOF antes del cuerpo"
             self.pending += data
         body, self.pending = self.pending[:size], self.pending[size:]
-        expected_body = (b"MiniHTTPd: respuesta HTTP de prueba.\n" if expected.startswith("200")
+        expected_body = (Path("www/index.html").read_bytes() if expected.startswith("200")
                          else expected.encode() + b"\n")
         assert body == expected_body, body
         if close:

@@ -2,12 +2,11 @@
 
 Servidor HTTP/1.1 educativo en C para Linux, en desarrollo.
 
-## Estado actual: etapa 6
+## Estado actual: etapa 7
 
 Servidor con epoll, sockets no bloqueantes y buffers independientes por cliente.
-Analiza solicitudes y envia respuestas HTTP reales. Todo GET valido recibe por
-ahora el texto `MiniHTTPd: respuesta HTTP de prueba.`; aun no se consulta `www`.
-Las rutas inexistentes tambien reciben ese texto durante esta etapa.
+Analiza solicitudes y sirve archivos estaticos de www con tipos MIME.
+La ruta / entrega www/index.html. Los archivos inexistentes devuelven 404.
 
 ## Compilar y ejecutar en Ubuntu / WSL
 
@@ -28,19 +27,20 @@ curl -v -X POST http://localhost:8080/
 curl -v -H 'Connection: close' http://localhost:8080/
 ```
 
+Abre http://localhost:8080/ en el navegador para ver HTML, CSS y la imagen.
 La segunda orden permite observar reutilizacion de la conexion. POST devuelve
 405 con Allow: GET. Un GET mal formado devuelve 400. Los errores cierran despues
 del envio; HTTP/1.1 mantiene la conexion por defecto y respeta Connection: close.
-Content-Length delimita cada cuerpo. Las respuestas usan CRLF y text/plain.
+Content-Length delimita cada cuerpo. Las respuestas usan CRLF, el tipo MIME del archivo y text/plain para errores.
 
 ## Organizacion
 
 - `src/main.c`: entrada y validacion del puerto.
 - `src/server.c`, `include/server.h`: sockets, epoll, buffers y envios parciales.
-- `src/http.c`, `include/http.h`: parser y respuestas HTTP de texto.
-- `src/files.c`, `include/files.h`: acceso a archivos pendiente.
-- `src/mime.c`, `include/mime.h`: tipos MIME pendientes.
-- `www/`: contenido estatico para una etapa posterior.
+- `src/http.c`, `include/http.h`: parser, encabezados y respuestas de error.
+- `src/files.c`, `include/files.h`: apertura segura de archivos regulares.
+- `src/mime.c`, `include/mime.h`: tipos MIME por extension.
+- `www/`: contenido estatico servido por el programa.
 - `tests/`: pruebas durante el desarrollo; se retiraran al preparar la entrega.
 
 ## Ciclo de cada cliente
@@ -78,6 +78,7 @@ make
 make test-http
 python3 tests/test_tcp.py
 python3 tests/test_epoll.py
+python3 tests/test_files.py
 make test-partial
 ```
 
@@ -102,6 +103,42 @@ se documentara la procedencia y se conservaran los avisos pertinentes.
 
 ## Pendiente
 
-Archivos estaticos, MIME, errores 403/404/500, proteccion de rutas con realpath,
-revision final de limites y seguridad, documentacion e informe de una pagina.
+Revision final de limites y seguridad, organizacion del bucle de eventos segun
+el enunciado, documentacion, retirada de tests e informe de una pagina.
 El informe reflejara las pruebas y experiencias reales del proyecto.
+
+## Archivos estaticos y MIME
+
+Ejecuta el programa desde la raiz del proyecto: www se resuelve respecto al
+directorio de trabajo. No publica otros directorios ni genera listados.
+El query se ignora al buscar archivos; se decodifican escapes %XX una sola vez.
+Se rechazan escapes invalidos, NUL, controles y barras invertidas (400),
+segmentos .. y enlaces simbolicos (403). realpath comprueba que la ruta resuelta
+pertenece a www usando el separador para evitar confundir www con www-other.
+La apertura posterior usa openat y O_NOFOLLOW para los componentes de la ruta.
+No se permite servir enlaces, aunque apunten dentro de www.
+
+Solo se sirven archivos regulares. Cada archivo se abre para la solicitud y se
+cierra al terminar o al desconectarse el cliente. fstat determina Content-Length;
+se lee y envia por bloques de 16 KiB sin cargar todo el archivo en memoria.
+Si el archivo se trunca despues de enviar encabezados, se cierra la conexion.
+Se recomienda mantener www estable durante el servicio; no se admite un arbol
+modificado de manera hostil por otros procesos. Las lecturas de disco son
+sincronicas: epoll controla sockets y no elimina posibles esperas del disco.
+
+MIME: .html text/html, .css text/css, .js application/javascript, .png image/png,
+.jpg/.jpeg image/jpeg; otras extensiones application/octet-stream. La comparacion
+de extensiones no distingue mayusculas. No se detecta el tipo por el contenido.
+
+Estados: 200 archivo servido, 400 solicitud/ruta invalida, 403 acceso prohibido,
+404 archivo inexistente, 405 metodo no admitido, 500 fallo interno. Los errores
+cierran la conexion despues de enviar su cuerpo. Sin www se devuelve 500.
+
+```bash
+curl -i http://localhost:8080/style.css
+curl -i http://localhost:8080/no-existe.html
+curl --path-as-is -i http://localhost:8080/../../etc/passwd
+```
+
+Se espera 200 con text/css, 404 y 403 respectivamente. --path-as-is impide que
+curl normalice la ruta antes de enviarla y permite probar el rechazo real.

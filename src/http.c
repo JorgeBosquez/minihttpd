@@ -159,34 +159,41 @@ enum http_result http_parse(const char *data, size_t length,
     return HTTP_OK;
 }
 
+static const char *reason_phrase(int status)
+{
+    switch (status) {
+    case 200: return "OK";
+    case 400: return "Bad Request";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 500: return "Internal Server Error";
+    default: return NULL;
+    }
+}
+
+int http_headers(char *out, size_t capacity, int status, int keep_alive,
+                 const char *type, size_t length)
+{
+    const char *reason = reason_phrase(status);
+    if (!reason) return -1;
+    int count = snprintf(out, capacity,
+        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
+        "Connection: %s\r\n%s\r\n", status, reason, type, length,
+        keep_alive ? "keep-alive" : "close", status == 405 ? "Allow: GET\r\n" : "");
+    return count < 0 || (size_t)count >= capacity ? -1 : count;
+}
+
 int http_response(char *out, size_t capacity, int status, int keep_alive)
 {
-    const char *reason;
-    const char *body;
-    switch (status) {
-    case 200:
-        reason = "OK";
-        body = "MiniHTTPd: respuesta HTTP de prueba.\n";
-        break;
-    case 400:
-        reason = "Bad Request";
-        body = "400 Bad Request\n";
-        break;
-    case 405:
-        reason = "Method Not Allowed";
-        body = "405 Method Not Allowed\n";
-        break;
-    default:
-        return -1;
-    }
-    int count = snprintf(out, capacity,
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: text/plain; charset=utf-8\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: %s\r\n%s\r\n%s",
-        status, reason, strlen(body), keep_alive ? "keep-alive" : "close",
-        status == 405 ? "Allow: GET\r\n" : "", body);
-    if (count < 0 || (size_t)count >= capacity)
-        return -1;
-    return count;
+    const char *reason = reason_phrase(status);
+    if (!reason) return -1;
+    char body[128];
+    int length = snprintf(body, sizeof(body), "%d %s\n", status, reason);
+    if (length < 0 || (size_t)length >= sizeof(body)) return -1;
+    int headers = http_headers(out, capacity, status, keep_alive,
+                               "text/plain; charset=utf-8", (size_t)length);
+    if (headers < 0 || (size_t)headers + (size_t)length >= capacity) return -1;
+    memcpy(out + headers, body, (size_t)length);
+    return headers + length;
 }

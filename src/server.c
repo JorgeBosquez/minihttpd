@@ -1,5 +1,6 @@
 #include "server.h"
 #include "http.h"
+#include "files.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -20,7 +21,9 @@ struct client {
     int fd;
     size_t used;
     char input[HTTP_MAX_HEADERS];
-    char output[1024];
+    char output[16384];
+    int file_fd;
+    size_t file_remaining;
     size_t output_size;
     size_t sent;
     int close_after_send;
@@ -100,6 +103,7 @@ static void close_client(int epoll_fd, struct client *client, struct client **he
         *head = client->next;
     if (client->next)
         client->next->previous = client->previous;
+    if (client->file_fd >= 0) close(client->file_fd);
     free(client);
 }
 
@@ -122,6 +126,7 @@ static int accept_clients(int epoll_fd, int listener, struct client **head)
             continue;
         }
         client->fd = fd;
+        client->file_fd = -1;
         if (set_nonblocking(fd) < 0 || watch_readable(epoll_fd, client) < 0) {
             close(fd);
             free(client);
@@ -179,8 +184,19 @@ static int process_input(int epoll_fd, struct client *client)
     }
     client->used -= consumed;
     memmove(client->input, client->input + consumed, client->used);
-    /* Por ahora todo GET valido recibe texto fijo, sin acceder a www. */
-    return queue_response(epoll_fd, client, 200, request.keep_alive);
+    struct static_file file;
+    int status = files_open(request.uri, &file);
+    if (status != 200)
+        return queue_response(epoll_fd, client, status, 0);
+    client->file_fd = file.fd;
+    client->file_remaining = file.size;
+    int size = http_headers(client->output, sizeof(client->output), 200,
+                            request.keep_alive, file.type, file.size);
+    if (size < 0) return -1;
+    client->output_size = (size_t)size;
+    client->sent = 0;
+    client->close_after_send = !request.keep_alive;
+    return change_interest(epoll_fd, client, EPOLLOUT);
 }
 
 /* Devuelven -1 cuando el llamador debe cerrar y liberar el cliente. */
@@ -219,6 +235,22 @@ static int write_client(int epoll_fd, struct client *client)
     if (client->sent < client->output_size)
         return 0;
     client->output_size = client->sent = 0;
+    if (client->file_fd >= 0) {
+        if (client->file_remaining) {
+            size_t wanted = client->file_remaining;
+            if (wanted > sizeof(client->output)) wanted = sizeof(client->output);
+            ssize_t bytes;
+            do {
+                bytes = read(client->file_fd, client->output, wanted);
+            } while (bytes < 0 && errno == EINTR);
+            if (bytes <= 0) return -1; /* Archivo truncado/error despues del header. */
+            client->file_remaining -= (size_t)bytes;
+            client->output_size = (size_t)bytes;
+            return 0;
+        }
+        close(client->file_fd);
+        client->file_fd = -1;
+    }
     if (client->close_after_send)
         return -1;
     /* Procesar sobrantes ahora evita esperar un EPOLLIN que podria no llegar. */

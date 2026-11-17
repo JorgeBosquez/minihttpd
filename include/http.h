@@ -28,6 +28,9 @@ enum http_result {
 enum http_result http_parse(const char *data, size_t length,
                             struct http_request *request, size_t *consumed);
 
+int http_headers(char *out, size_t capacity, int status, int keep_alive,
+                 const char *type, size_t length);
+
 /* Construye una respuesta de texto; devuelve bytes escritos o -1. */
 int http_response(char *out, size_t capacity, int status, int keep_alive);
 
