@@ -69,6 +69,7 @@ static int valid_host(const char *host)
 /* Connection es una lista: close prevalece sobre keep-alive. */
 static int connection_close(const char *first, const char *end, int *close_seen)
 {
+    int token_seen = 0;
     while (first < end) {
         while (first < end && (*first == ' ' || *first == '\t' || *first == ','))
             ++first;
@@ -79,6 +80,7 @@ static int connection_close(const char *first, const char *end, int *close_seen)
             ++first;
         if (first == start)
             return -1;
+        token_seen = 1;
         if (named(start, (size_t)(first - start), "close"))
             *close_seen = 1;
         while (first < end && (*first == ' ' || *first == '\t'))
@@ -86,7 +88,7 @@ static int connection_close(const char *first, const char *end, int *close_seen)
         if (first < end && *first != ',')
             return -1;
     }
-    return 0;
+    return token_seen ? 0 : -1;
 }
 
 enum http_result http_parse(const char *data, size_t length,
@@ -144,7 +146,8 @@ enum http_result http_parse(const char *data, size_t length,
         if (*u <= 32 || *u >= 127 || *u == '#')
             return HTTP_BAD_REQUEST;
 
-    int host_seen = 0, agent_seen = 0, length_seen = 0, close_seen = 0;
+    int host_seen = 0, agent_seen = 0, connection_seen = 0;
+    int length_seen = 0, close_seen = 0;
     char *line = end + 2;
     while (*line != '\r') {
         end = strstr(line, "\r\n");
@@ -172,10 +175,11 @@ enum http_result http_parse(const char *data, size_t length,
                     strchr("/,?@#", *h))
                     return HTTP_BAD_REQUEST;
         } else if (named(line, name_size, "User-Agent")) {
-            if (agent_seen++ || copy_value(request->user_agent,
+            if (agent_seen++ || value == value_end || copy_value(request->user_agent,
                     sizeof(request->user_agent), value, value_end) < 0)
                 return HTTP_BAD_REQUEST;
         } else if (named(line, name_size, "Connection")) {
+            connection_seen = 1;
             if (connection_close(value, value_end, &close_seen) < 0)
                 return HTTP_BAD_REQUEST;
         } else if (named(line, name_size, "Transfer-Encoding")) {
@@ -190,7 +194,10 @@ enum http_result http_parse(const char *data, size_t length,
         }
         line = end + 2;
     }
-    if (!host_seen || !valid_host(request->host))
+    /* Condicion academica: las tres cabeceras son obligatorias.
+     * Connection y User-Agent no son obligatorias en HTTP/1.1 general.
+     */
+    if (!host_seen || !agent_seen || !connection_seen || !valid_host(request->host))
         return HTTP_BAD_REQUEST;
     if (!get)
         return HTTP_METHOD_NOT_ALLOWED;

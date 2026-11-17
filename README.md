@@ -23,9 +23,9 @@ Ctrl+C o SIGTERM solicitan una parada ordenada: se cierran clientes, archivos
 y epoll y se libera la memoria. En otra terminal:
 
 ```bash
-curl -v http://localhost:8080/index.html
-curl -v http://localhost:8080/ http://localhost:8080/index.html
-curl -v -X POST http://localhost:8080/
+curl -H 'Connection: keep-alive' -v http://localhost:8080/index.html
+curl -H 'Connection: keep-alive' -v http://localhost:8080/ http://localhost:8080/index.html
+curl -H 'Connection: keep-alive' -v -X POST http://localhost:8080/
 curl -v -H 'Connection: close' http://localhost:8080/
 ```
 
@@ -62,8 +62,12 @@ de conexiones ni plazos de inactividad todavia.
 
 ## Parser y limites
 
-HTTP/1.1, GET y rutas que empiezan por `/`. Host obligatorio y unico; se leen
-Connection y User-Agent. Los nombres de cabecera no distinguen mayusculas.
+HTTP/1.1, GET y rutas que empiezan por `/`. Por indicacion del profesor, son
+obligatorias Host, Connection y User-Agent, con valores no vacios. Si falta
+cualquiera, se devuelve 400 y se cierra despues de la respuesta. Es una condicion
+del proyecto: HTTP/1.1 general no obliga a enviar Connection y User-Agent.
+Host y User-Agent no se admiten duplicados; Connection puede aparecer varias
+veces y close prevalece. Los nombres de cabecera no distinguen mayusculas.
 No admite HTTP/1.0, absolute-form, cuerpos ni Transfer-Encoding. Content-Length
 solo puede indicar cero. Host admite nombres DNS/IPv4 y literales IPv6 entre corchetes, con puerto
 numerico opcional de 0 a 65535. Se rechazan hosts vacios, signos no admitidos,
@@ -80,19 +84,23 @@ En otra terminal ejecuta:
 
 ```bash
 # 200 y el HTML de www/index.html
-curl -i http://localhost:8080/
+curl -H 'Connection: keep-alive' -i http://localhost:8080/
 # 200 y Content-Type: text/css
-curl -i http://localhost:8080/style.css
+curl -H 'Connection: keep-alive' -i http://localhost:8080/style.css
 # 404
-curl -i http://localhost:8080/no-existe.html
+curl -H 'Connection: keep-alive' -i http://localhost:8080/no-existe.html
 # 405 y Allow: GET
-curl -i -X POST http://localhost:8080/
+curl -H 'Connection: keep-alive' -i -X POST http://localhost:8080/
 # 400 por falta de Host
-curl -i -H 'Host:' http://localhost:8080/
+curl -H 'Connection: keep-alive' -i -H 'Host:' http://localhost:8080/
+# 400 por falta de Connection (curl no la agrega por defecto)
+curl -i http://localhost:8080/
+# 400 por falta de User-Agent
+curl -i -H 'Connection: keep-alive' -H 'User-Agent:' http://localhost:8080/
 # 403 sin normalizar la ruta en curl
-curl --path-as-is -i http://localhost:8080/../../etc/passwd
+curl -H 'Connection: keep-alive' --path-as-is -i http://localhost:8080/../../etc/passwd
 # Reutilizacion de conexion: buscar Reusing existing en la salida
-curl -v http://localhost:8080/ http://localhost:8080/style.css
+curl -H 'Connection: keep-alive' -v http://localhost:8080/ http://localhost:8080/style.css
 ```
 
 El estado 500 se devuelve ante fallos internos, por ejemplo si falta www.
@@ -101,7 +109,9 @@ navegador. Esa comprobacion simple no sustituye las pruebas de solicitudes
 fragmentadas y envios parciales realizadas durante el desarrollo.
 
 Las pruebas automatizadas usadas durante el desarrollo estan en el historial
-hasta el commit 0a8f273. Se retiraron de la version de entrega. No son necesarias
+hasta el commit 0a8f273. Se retiraron de la version de entrega. Esas versiones
+preceden la condicion academica de las tres cabeceras obligatorias; sus casos
+validos deben agregar Connection y User-Agent para ejecutarse con el parser actual. No son necesarias
 para compilar o ejecutar el servidor. Para estudiarlas sin modificar tu carpeta:
 
 ```bash
@@ -154,13 +164,13 @@ Estados: 200 archivo servido, 400 solicitud/ruta invalida, 403 acceso prohibido,
 cierran la conexion despues de enviar su cuerpo. Sin www se devuelve 500.
 
 ```bash
-curl -i http://localhost:8080/style.css
-curl -i http://localhost:8080/no-existe.html
-curl --path-as-is -i http://localhost:8080/../../etc/passwd
+curl -H 'Connection: keep-alive' -i http://localhost:8080/style.css
+curl -H 'Connection: keep-alive' -i http://localhost:8080/no-existe.html
+curl -H 'Connection: keep-alive' --path-as-is -i http://localhost:8080/../../etc/passwd
 ```
 
 Se espera 200 con text/css, 404 y 403 respectivamente. --path-as-is impide que
-curl normalice la ruta antes de enviarla y permite probar el rechazo real.
+curl -H 'Connection: keep-alive' normalice la ruta antes de enviarla y permite probar el rechazo real.
 
 ## Revision de arquitectura
 
