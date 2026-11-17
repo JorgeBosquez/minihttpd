@@ -1,5 +1,6 @@
 #include "http.h"
 
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -24,6 +25,45 @@ static int copy_value(char *out, size_t capacity, const char *first, const char 
 static int named(const char *first, size_t size, const char *name)
 {
     return strlen(name) == size && strncasecmp(first, name, size) == 0;
+}
+
+/* Aceptamos nombres DNS/IPv4 y literales IPv6 entre corchetes, con puerto
+ * numerico opcional. Subconjunto intencional para este servidor educativo.
+ */
+static int valid_host(const char *host)
+{
+    const char *port = NULL;
+    if (*host == '[') {
+        const char *end = strchr(host, ']');
+        char address[INET6_ADDRSTRLEN];
+        struct in6_addr binary;
+        if (!end || copy_value(address, sizeof(address), host + 1, end) < 0 ||
+            inet_pton(AF_INET6, address, &binary) != 1)
+            return 0;
+        if (end[1]) {
+            if (end[1] != ':') return 0;
+            port = end + 2;
+        }
+    } else {
+        const char *end = strchr(host, ':');
+        if (!end) end = host + strlen(host);
+        if (end == host) return 0;
+        for (const char *h = host; h < end; ++h)
+            if (!((*h >= 'a' && *h <= 'z') || (*h >= 'A' && *h <= 'Z') ||
+                  (*h >= '0' && *h <= '9') || *h == '.' || *h == '-'))
+                return 0;
+        if (*end) port = end + 1;
+    }
+    if (port) {
+        if (!*port) return 0;
+        unsigned int number = 0;
+        for (; *port; ++port) {
+            if (*port < '0' || *port > '9') return 0;
+            number = number * 10 + (unsigned int)(*port - '0');
+            if (number > 65535) return 0;
+        }
+    }
+    return 1;
 }
 
 /* Connection es una lista: close prevalece sobre keep-alive. */
@@ -150,7 +190,7 @@ enum http_result http_parse(const char *data, size_t length,
         }
         line = end + 2;
     }
-    if (!host_seen)
+    if (!host_seen || !valid_host(request->host))
         return HTTP_BAD_REQUEST;
     if (!get)
         return HTTP_METHOD_NOT_ALLOWED;

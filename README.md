@@ -2,7 +2,7 @@
 
 Servidor HTTP/1.1 educativo en C para Linux, en desarrollo.
 
-## Estado actual: etapa 7
+## Estado actual: revision de estructura y validacion
 
 Servidor con epoll, sockets no bloqueantes y buffers independientes por cliente.
 Analiza solicitudes y sirve archivos estaticos de www con tipos MIME.
@@ -18,7 +18,8 @@ make
 ```
 
 Puerto predeterminado 8080; admite 1-65535. Escucha en todas las interfaces IPv4.
-Ctrl+C termina el proceso y Linux libera sus recursos. En otra terminal:
+Ctrl+C o SIGTERM solicitan una parada ordenada: se cierran clientes, archivos
+y epoll y se libera la memoria. En otra terminal:
 
 ```bash
 curl -v http://localhost:8080/index.html
@@ -35,8 +36,9 @@ Content-Length delimita cada cuerpo. Las respuestas usan CRLF, el tipo MIME del 
 
 ## Organizacion
 
-- `src/main.c`: entrada y validacion del puerto.
-- `src/server.c`, `include/server.h`: sockets, epoll, buffers y envios parciales.
+- `src/main.c`: argumentos, senales y bucle epoll_wait.
+- `src/server.c`, `include/server.h`: sockets, registro y despacho de eventos,
+  buffers y envios parciales.
 - `src/http.c`, `include/http.h`: parser, encabezados y respuestas de error.
 - `src/files.c`, `include/files.h`: apertura segura de archivos regulares.
 - `src/mime.c`, `include/mime.h`: tipos MIME por extension.
@@ -63,7 +65,9 @@ de conexiones ni plazos de inactividad todavia.
 HTTP/1.1, GET y rutas que empiezan por `/`. Host obligatorio y unico; se leen
 Connection y User-Agent. Los nombres de cabecera no distinguen mayusculas.
 No admite HTTP/1.0, absolute-form, cuerpos ni Transfer-Encoding. Content-Length
-solo puede indicar cero. La validacion completa de autoridad Host esta pendiente.
+solo puede indicar cero. Host admite nombres DNS/IPv4 y literales IPv6 entre corchetes, con puerto
+numerico opcional de 0 a 65535. Se rechazan hosts vacios, signos no admitidos,
+IPv6 mal formado y puertos invalidos; es un subconjunto de autoridad URI.
 
 Limites: 16 KiB de cabeceras, 4096 bytes por linea contando CR, URI de 2048 bytes,
 Host y User-Agent de 1024 bytes. Solicitudes que exceden los limites dan 400.
@@ -103,8 +107,8 @@ se documentara la procedencia y se conservaran los avisos pertinentes.
 
 ## Pendiente
 
-Revision final de limites y seguridad, organizacion del bucle de eventos segun
-el enunciado, documentacion, retirada de tests e informe de una pagina.
+Validacion final por el estudiante, retirada de tests y sus objetivos Makefile,
+revision de documentacion e informe de una pagina.
 El informe reflejara las pruebas y experiencias reales del proyecto.
 
 ## Archivos estaticos y MIME
@@ -142,3 +146,12 @@ curl --path-as-is -i http://localhost:8080/../../etc/passwd
 
 Se espera 200 con text/css, 404 y 403 respectivamente. --path-as-is impide que
 curl normalice la ruta antes de enviarla y permite probar el rechazo real.
+
+## Revision de arquitectura
+
+main coordina epoll_wait y delega cada evento a server_handle_event. server
+mantiene su estado privado y ofrece inicio, descriptor epoll y parada. Los
+manejadores SIGINT/SIGTERM solo marcan una bandera sig_atomic_t: la liberacion
+se realiza en el flujo normal. epoll_wait espera como maximo un segundo para
+que una senal recibida justo antes de esperar no retrase indefinidamente la
+salida. Este plazo no limita el tiempo de inactividad de los clientes.

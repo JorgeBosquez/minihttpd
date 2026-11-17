@@ -1,4 +1,5 @@
 """Pruebas de la etapa TCP. Ejecutar desde la raiz: python3 tests/test_tcp.py."""
+import http.client
 import socket
 import subprocess
 
@@ -32,6 +33,21 @@ try:
         assert client.recv(1) == b"", "Se esperaba cierre tras EOF"
     assert process.poll() is None, "El servidor termino tras aceptar un cliente"
     print("OK: cierre tras EOF; servidor sigue activo")
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as active:
+        # El handshake TCP no garantiza que accept ya haya ocurrido.
+        # Una respuesta completa confirma que el servidor registro y atendio
+        # este cliente antes de que pidamos la parada.
+        active.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        response = http.client.HTTPResponse(active)
+        response.begin()
+        assert response.status == 200
+        assert response.getheader("Connection") == "keep-alive"
+        response.read()
+        response.close()
+        process.terminate()
+        assert process.wait(timeout=3) == 0, "Terminacion no ordenada"
+        assert active.recv(1) == b"", "Conexion no cerrada al terminar"
+    print("OK: SIGTERM termina ordenadamente con cliente conectado")
 finally:
     process.terminate()
     process.communicate(timeout=3)

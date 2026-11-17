@@ -46,7 +46,13 @@ int main(void)
     expect("GET / HTTP/1.0\r\nHost: a\r\n\r\n", HTTP_BAD_REQUEST);
     expect("GET / HTTP/1.1\nHost: a\n\n", HTTP_BAD_REQUEST);
     expect("GET / HTTP/1.1\rX", HTTP_BAD_REQUEST);
-    puts("OK: Connection, metodos y solicitudes mal formadas");
+    expect("GET / HTTP/1.1\r\nHost: [::1]:8080\r\n\r\n", HTTP_OK);
+    expect("GET / HTTP/1.1\r\nHost: :8080\r\n\r\n", HTTP_BAD_REQUEST);
+    expect("GET / HTTP/1.1\r\nHost: a:abc\r\n\r\n", HTTP_BAD_REQUEST);
+    expect("GET / HTTP/1.1\r\nHost: a:99999999999999\r\n\r\n", HTTP_BAD_REQUEST);
+    expect("GET / HTTP/1.1\r\nHost: [invalid]\r\n\r\n", HTTP_BAD_REQUEST);
+    expect("GET / HTTP/1.1\r\nHost: ::1\r\n\r\n", HTTP_BAD_REQUEST);
+    puts("OK: Connection, metodos, Host y solicitudes mal formadas");
 
     char buffer[HTTP_MAX_HEADERS + 100];
     memcpy(buffer, valid, size);

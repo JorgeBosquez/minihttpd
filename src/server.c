@@ -31,6 +31,13 @@ struct client {
     struct client *next;
 };
 
+struct server {
+    int listener;
+    int epoll_fd;
+    struct client listener_state;
+    struct client *clients;
+};
+
 /* Referencia conceptual: passiveTCP.c y passivesock.c de Comer y Stevens,
  * Internetworking with TCP/IP, volumen III, distribucion Linux/POSIX.
  * Implementacion propia: IPv4, puerto numerico y errores mediante retorno.
@@ -257,68 +264,68 @@ static int write_client(int epoll_fd, struct client *client)
     return process_input(epoll_fd, client);
 }
 
-int server_run(unsigned short port)
+struct server *server_start(unsigned short port)
 {
-    int listener = create_listener(port);
-    if (listener < 0)
-        return -1;
-    if (set_nonblocking(listener) < 0) {
-        close(listener);
-        return -1;
+    struct server *server = calloc(1, sizeof(*server));
+    if (!server) {
+        perror("calloc server");
+        return NULL;
     }
-    int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (epoll_fd < 0) {
+    server->listener = create_listener(port);
+    server->epoll_fd = -1;
+    if (server->listener < 0) {
+        free(server);
+        return NULL;
+    }
+    if (set_nonblocking(server->listener) < 0) {
+        server_stop(server);
+        return NULL;
+    }
+    server->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (server->epoll_fd < 0) {
         perror("epoll_create1");
-        close(listener);
-        return -1;
+        server_stop(server);
+        return NULL;
     }
-    struct client listener_state = {.fd = listener};
-    struct client *clients = NULL;
-    if (watch_readable(epoll_fd, &listener_state) < 0) {
-        close(epoll_fd);
-        close(listener);
-        return -1;
+    server->listener_state.fd = server->listener;
+    if (watch_readable(server->epoll_fd, &server->listener_state) < 0) {
+        server_stop(server);
+        return NULL;
     }
-
     printf("MiniHTTPd: epoll escuchando en 0.0.0.0:%u (Ctrl+C para salir).\n",
            (unsigned int)port);
     fflush(stdout);
-    struct epoll_event events[MAX_EVENTS];
-    int result = 0;
-    for (;;) {
-        int ready = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
-        if (ready < 0) {
-            if (errno == EINTR)
-                continue;
-            perror("epoll_wait");
-            result = -1;
-            break;
-        }
-        for (int i = 0; i < ready; ++i) {
-            struct client *client = events[i].data.ptr;
-            if (client == &listener_state) {
-                if (accept_clients(epoll_fd, listener, &clients) < 0) {
-                    result = -1;
-                    goto done;
-                }
-            } else {
-                int status;
-                if (events[i].events & EPOLLERR) {
-                    status = -1;
-                } else if (client->output_size) {
-                    status = write_client(epoll_fd, client);
-                } else {
-                    status = read_client(epoll_fd, client);
-                }
-                if (status < 0)
-                    close_client(epoll_fd, client, &clients);
-            }
-        }
-    }
-done:
-    while (clients)
-        close_client(epoll_fd, clients, &clients);
-    close(epoll_fd);
-    close(listener);
-    return result;
+    return server;
+}
+
+int server_epoll_fd(const struct server *server)
+{
+    return server->epoll_fd;
+}
+
+int server_handle_event(struct server *server, const struct epoll_event *event)
+{
+    struct client *client = event->data.ptr;
+    if (client == &server->listener_state)
+        return accept_clients(server->epoll_fd, server->listener, &server->clients);
+    int status;
+    if (event->events & EPOLLERR)
+        status = -1;
+    else if (client->output_size)
+        status = write_client(server->epoll_fd, client);
+    else
+        status = read_client(server->epoll_fd, client);
+    if (status < 0)
+        close_client(server->epoll_fd, client, &server->clients);
+    return 0;
+}
+
+void server_stop(struct server *server)
+{
+    if (!server) return;
+    while (server->clients)
+        close_client(server->epoll_fd, server->clients, &server->clients);
+    if (server->epoll_fd >= 0) close(server->epoll_fd);
+    if (server->listener >= 0) close(server->listener);
+    free(server);
 }
