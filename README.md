@@ -1,8 +1,8 @@
 # MiniHTTPd
 
-Servidor HTTP/1.1 educativo en C para Linux, en desarrollo.
+Servidor HTTP/1.1 basico en C para Linux, sin bibliotecas HTTP externas.
 
-## Estado actual: revision de estructura y validacion
+## Funcionalidad
 
 Servidor con epoll, sockets no bloqueantes y buffers independientes por cliente.
 Analiza solicitudes y sirve archivos estaticos de www con tipos MIME.
@@ -10,7 +10,8 @@ La ruta / entrega www/index.html. Los archivos inexistentes devuelven 404.
 
 ## Compilar y ejecutar en Ubuntu / WSL
 
-Requisitos: GCC, Make, Git; Python 3 para las pruebas de red.
+Requisitos: GCC y Make en Linux. Git para gestionar el repositorio y curl
+para las comprobaciones manuales. Python no es necesario.
 
 ```bash
 make
@@ -43,7 +44,6 @@ Content-Length delimita cada cuerpo. Las respuestas usan CRLF, el tipo MIME del 
 - `src/files.c`, `include/files.h`: apertura segura de archivos regulares.
 - `src/mime.c`, `include/mime.h`: tipos MIME por extension.
 - `www/`: contenido estatico servido por el programa.
-- `tests/`: pruebas durante el desarrollo; se retiraran al preparar la entrega.
 
 ## Ciclo de cada cliente
 
@@ -73,25 +73,40 @@ Limites: 16 KiB de cabeceras, 4096 bytes por linea contando CR, URI de 2048 byte
 Host y User-Agent de 1024 bytes. Solicitudes que exceden los limites dan 400.
 Referencia: https://www.rfc-editor.org/rfc/rfc9112.html
 
-## Pruebas
+## Comprobacion manual
 
-Desde la raiz, sin iniciar manualmente otro servidor:
+Inicia el servidor desde la raiz del proyecto con `./minihttpd 8080`.
+En otra terminal ejecuta:
 
 ```bash
-make
-make test-http
-python3 tests/test_tcp.py
-python3 tests/test_epoll.py
-python3 tests/test_files.py
-make test-partial
+# 200 y el HTML de www/index.html
+curl -i http://localhost:8080/
+# 200 y Content-Type: text/css
+curl -i http://localhost:8080/style.css
+# 404
+curl -i http://localhost:8080/no-existe.html
+# 405 y Allow: GET
+curl -i -X POST http://localhost:8080/
+# 400 por falta de Host
+curl -i -H 'Host:' http://localhost:8080/
+# 403 sin normalizar la ruta en curl
+curl --path-as-is -i http://localhost:8080/../../etc/passwd
+# Reutilizacion de conexion: buscar Reusing existing en la salida
+curl -v http://localhost:8080/ http://localhost:8080/style.css
 ```
 
-Las pruebas de red arrancan y detienen sus propios servidores. Verifican clientes
-inactivos, fragmentacion, pipeline, cuerpos y Content-Length, 400/405, cierres,
-EOF y desconexion abrupta. test-partial compila un ejecutable separado que limita
-send a siete bytes e inyecta EAGAIN; ejecuta las mismas pruebas para comprobar
-que los encabezados y cuerpos llegan completos y en orden. El binario normal
-no incluye esa instrumentacion.
+El estado 500 se devuelve ante fallos internos, por ejemplo si falta www.
+Para observar varios clientes, abre varias terminales con `curl` o ventanas del
+navegador. Esa comprobacion simple no sustituye las pruebas de solicitudes
+fragmentadas y envios parciales realizadas durante el desarrollo.
+
+Las pruebas automatizadas usadas durante el desarrollo estan en el historial
+hasta el commit 0a8f273. Se retiraron de la version de entrega. No son necesarias
+para compilar o ejecutar el servidor. Para estudiarlas sin modificar tu carpeta:
+
+```bash
+git show 0a8f273:tests/test_epoll.py
+```
 
 ## Referencias de los ejemplos
 
@@ -107,8 +122,8 @@ se documentara la procedencia y se conservaran los avisos pertinentes.
 
 ## Pendiente
 
-Validacion final por el estudiante, retirada de tests y sus objetivos Makefile,
-revision de documentacion e informe de una pagina.
+Informe de una pagina con experiencias y conclusiones del estudiante y URL
+del repositorio: https://github.com/JorgeBosquez/minihttpd.
 El informe reflejara las pruebas y experiencias reales del proyecto.
 
 ## Archivos estaticos y MIME
