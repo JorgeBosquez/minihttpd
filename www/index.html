@@ -1,55 +1,23 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="MiniHTTPd, un servidor HTTP en C para el proyecto de Computación Distribuida.">
-  <title>MiniHTTPd | Computación Distribuida</title>
+  <title>Computación Distribuida</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header class="site-header">
-    <a class="brand" href="/" aria-label="MiniHTTPd, inicio">MiniHTTPd<span>.</span></a>
-    <span class="course">Computación Distribuida</span>
-  </header>
-
   <main>
-    <section class="intro" aria-labelledby="page-title">
-      <p class="eyebrow">Proyecto académico</p>
-      <h1 id="page-title">Un servidor pequeño.<br>Una conexión con lo aprendido.</h1>
-      <p class="description">MiniHTTPd es un servidor HTTP/1.1 desarrollado en C para Linux.
-        Este sitio reúne HTML, estilos e imágenes servidos desde el propio proyecto.</p>
+    <section class="intro">
+      <h1>Computación Distribuida</h1>
+      <p class="description">Varios equipos conectados colaboran para realizar una tarea.</p>
     </section>
-
     <figure class="illustration">
       <img src="/imagen.jpg"
-        alt="Ilustración de una tarea distribuida entre varias computadoras conectadas."
-        width="1200" height="630">
-      <figcaption>Computación distribuida: varios equipos conectados para colaborar en una tarea.</figcaption>
+           alt="Una tarea distribuida entre varias computadoras conectadas"
+           width="1200" height="630">
+      <figcaption>Imagen servida por MiniHTTPd.</figcaption>
     </figure>
-
-    <section class="details" aria-label="Características del proyecto">
-      <article>
-        <span class="detail-number" aria-hidden="true">01</span>
-        <h2>HTTP en C</h2>
-        <p>Solicitudes GET y respuestas construidas sin bibliotecas HTTP externas.</p>
-      </article>
-      <article>
-        <span class="detail-number" aria-hidden="true">02</span>
-        <h2>Varios clientes</h2>
-        <p>Un solo hilo coordina las conexiones mediante eventos con epoll.</p>
-      </article>
-      <article>
-        <span class="detail-number" aria-hidden="true">03</span>
-        <h2>Archivos estáticos</h2>
-        <p>HTML, CSS e imágenes con su tipo MIME y validación de rutas.</p>
-      </article>
-    </section>
   </main>
-
-  <footer class="site-footer">
-    <p>MiniHTTPd · Proyecto de Computación Distribuida</p>
-    <a href="https://github.com/JorgeBosquez/minihttpd">Ver código en GitHub <span aria-hidden="true">↗</span></a>
-  </footer>
 </body>
 </html>
